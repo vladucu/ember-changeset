@@ -476,7 +476,7 @@ export function changeset(obj, validateFn = defaultValidatorFn, validationMap = 
       let cache = get(this, RELAY_CACHE);
 
       let error = this._recursivelyGet(key, errors);
-      if (!isNone(error)) {
+      if (!isNone(error) && !isObject(error)) {
         return get(error, 'value');
       }
 
