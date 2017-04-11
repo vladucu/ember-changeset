@@ -9,6 +9,8 @@ import objectWithout from 'ember-changeset/utils/object-without';
 import includes from 'ember-changeset/utils/includes';
 import take from 'ember-changeset/utils/take';
 import isChangeset, { CHANGESET } from 'ember-changeset/utils/is-changeset';
+import deleteKey from 'ember-changeset/utils/delete-key';
+import deepSet from 'ember-changeset/utils/deep-set';
 
 const {
   Object: EmberObject,
@@ -108,12 +110,6 @@ export function changeset(obj, validateFn = defaultValidatorFn, validationMap = 
      * @return {Any}
      */
     setUnknownProperty(key, value) {
-      let changesetOptions = get(this, OPTIONS);
-      let skipValidate = get(changesetOptions, 'skipValidate');
-      if (skipValidate) {
-        return this._setProperty(true, { key, value });
-      }
-
       return this.validateAndSet(key, value);
     },
 
@@ -136,6 +132,7 @@ export function changeset(obj, validateFn = defaultValidatorFn, validationMap = 
      */
     willDestroy() {
       // TODO destroy all relays
+      this._super(...arguments);
     },
 
     /**
@@ -344,7 +341,7 @@ export function changeset(obj, validateFn = defaultValidatorFn, validationMap = 
       this.notifyPropertyChange(ERRORS);
       this.notifyPropertyChange(key);
 
-      return set(errors, key, options);
+      return deepSet(errors, key, options);
     },
 
     /**
@@ -357,9 +354,9 @@ export function changeset(obj, validateFn = defaultValidatorFn, validationMap = 
      */
     pushErrors(key, ...newErrors) {
       let errors = get(this, ERRORS);
-      let existingError = get(errors, key) || { validation: [] };
-      let { validation } = existingError;
-      let value = get(this, key);
+      let existingError = get(errors, key) || { validation: [], value: null };
+      let { validation, value } = existingError;
+      value = value || get(this, key);
 
       if (!isArray(validation) && isPresent(validation)) {
         existingError.validation = [existingError.validation];
@@ -442,6 +439,12 @@ export function changeset(obj, validateFn = defaultValidatorFn, validationMap = 
     validateAndSet(key, value) {
       let content = get(this, CONTENT);
       let oldValue = get(content, key);
+      let options = get(this, OPTIONS);
+      let skipValidate = get(options, 'skipValidate');
+      if (skipValidate) {
+        return this._setProperty(true, { key, value });
+      }
+
       let validation = this._validate(key, value, oldValue);
 
       if (isPromise(validation)) {
@@ -470,13 +473,24 @@ export function changeset(obj, validateFn = defaultValidatorFn, validationMap = 
       let changes = get(this, CHANGES);
       let errors = get(this, ERRORS);
       let content = get(this, CONTENT);
+      let cache = get(this, RELAY_CACHE);
 
-      if (errors.hasOwnProperty(key)) {
-        return get(errors, `${key}.value`);
+      let error = this._recursivelyGet(key, errors);
+      if (!isNone(error)) {
+        return get(error, 'value');
+      }
+
+      if (cache.hasOwnProperty(key)) {
+        return this._relayFor(key);
+      }
+
+      let change = this._recursivelyGet(key, changes);
+      if (!isNone(change)) {
+        return change;
       }
 
       if (changes.hasOwnProperty(key)) {
-        return get(changes, key);
+        return get(changes, key) ;
       }
 
       let oldValue = get(content, key);
@@ -538,9 +552,9 @@ export function changeset(obj, validateFn = defaultValidatorFn, validationMap = 
         this._deleteKey(ERRORS, key);
 
         if (!isEqual(oldValue, value)) {
-          this._recursivelySet(key, value, changes);
-        } else if (obj.hasOwnProperty(key)) {
-          delete changes[key];
+          deepSet(changes, key, value);
+        } else if (changes.hasOwnProperty(key)) {
+          this._deleteKey(CHANGES, key);
         }
 
         this.notifyPropertyChange(CHANGES);
@@ -581,27 +595,18 @@ export function changeset(obj, validateFn = defaultValidatorFn, validationMap = 
       }
     },
 
-    /**
-     * Value for change or the original value.
-     *
-     * @private
-     * @param {String} key
-     * @param {Any} value
-     * @param {Object} obj
-     * @return {Void}
-     */
-    _recursivelySet(key, value, obj) {
+    _recursivelyGet(key, obj) {
       let keys = key.split('.');
-      let prev;
-      while (keys.length > 1) {
-        let next = keys.shift();
-        if (prev) {
-          next = `${prev}.${next}`;
+      let next = keys.shift();
+
+      while (keys.length >= 1) {
+        obj = get(obj, next);
+        if (isNone(obj)) {
+          return undefined;
         }
-        set(obj, next, get(obj, next) || {});
-        prev = next;
+        next = keys.shift();
       }
-      set(obj, key, value);
+      return get(obj, next);
     },
 
     /**
@@ -622,7 +627,7 @@ export function changeset(obj, validateFn = defaultValidatorFn, validationMap = 
         delete cache[key];
       }
 
-      if (isPresent(found)) {
+      if (!isNone(found)) {
         return found;
       }
 
@@ -660,8 +665,9 @@ export function changeset(obj, validateFn = defaultValidatorFn, validationMap = 
         return;
       }
 
-      if (obj.hasOwnProperty(key)) {
-        delete obj[key];
+      let objWithoutKey = deleteKey(obj, key);
+      if (!isEqual(obj, objWithoutKey)) {
+        set(this, objName, objWithoutKey);
         this.notifyPropertyChange(`${objName}.${key}`);
         this.notifyPropertyChange(objName);
       }
